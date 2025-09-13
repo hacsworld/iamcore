@@ -27,3 +27,4 @@ curl -s -X POST http://localhost:8000/act -H "Content-Type: application/json" -d
 - Локальные эмбеддинги — CPU, завернуты в thread-pool
 - В pgvector оператор `<=>` — distance (меньше — лучше)
 - Seed примеров вектора в init.sql убран — соблюдайте размерность VECTOR(384)
+<!-- test commit to trigger CI -->
