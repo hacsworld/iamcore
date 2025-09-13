@@ -1,0 +1,20 @@
+version: "2.2"
+updated_at: 2024-06-18T12:00:00Z
+
+resonance:
+  distance_threshold: 0.25  # Чем меньше расстояние - тем лучше
+  min_strength_execute: 0.7
+  auto_adjust: true
+
+security:
+  hmac_required: true
+  allowed_ips: []
+  rate_limit: 1000
+
+cache:
+  ttl_seconds: 300
+  max_size_mb: 1000
+
+logging:
+  level: "INFO"
+  export_metrics: true

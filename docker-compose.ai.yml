@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  ai-core:
+    build: ./core
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://cache:6379/0
+      - PG_VECTOR_URL=postgresql://postgres:postgres@vector:5432/hacs
+      - NATS_URL=nats://nats:4222
+      - HMAC_SECRET=${HMAC_SECRET}
+    volumes:
+      - ./hot:/app/hot
+      - ./cache:/app/cache
+    ports:
+      - "8000:8000"
+    depends_on:
+      nats:
+        condition: service_healthy
+      vector:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  vector:
+    image: ankane/pgvector:latest
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hacs
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - vector_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: nats:latest
+    restart: unless-stopped
+    command: "-js"
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "nats", "server", "info"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  cache:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+volumes:
+  vector_data:
+  nats_data:
+  redis_data:
