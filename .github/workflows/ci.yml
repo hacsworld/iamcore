@@ -1,4 +1,4 @@
-name: ci
+name: CI
 
 on:
   push:
@@ -6,17 +6,96 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  core-tests:
+    name: Core (Python) tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Build ai-core image
-        run: docker build -t hacs-core:ci ./core
-      - name: Python checks
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - run: pip install -r core/requirements.txt
-      - run: python -c "import sentence_transformers; print('embedder ok')"
+          python-version: "3.11"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip setuptools wheel
+
+      - name: Install core deps
+        run: pip install -r core/requirements.txt
+
+      - name: Import smoke
+        run: python -c "import sentence_transformers; print('embedder ok')"
+
+      - name: Run core in background
+        working-directory: core
+        run: |
+          nohup python app.py > /tmp/hacs-core.log 2>&1 &
+          for i in {1..30}; do
+            curl -fsS http://127.0.0.1:8000/health && exit 0 || sleep 1
+          done
+          echo "Core healthcheck failed"; echo "---- LOGS ----"; tail -n 200 /tmp/hacs-core.log; exit 1
+
+  pair-server-tests:
+    name: Pair server (Python) tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip setuptools wheel
+
+      - name: Install pair-server deps
+        run: pip install -r pair-server/requirements.txt
+
+      - name: Run pair-server in background
+        working-directory: pair-server
+        env:
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          docker run -d --name ci-redis -p 6379:6379 redis:7-alpine
+          nohup uvicorn main:app --host 127.0.0.1 --port 8001 > /tmp/hacs-pair.log 2>&1 &
+          for i in {1..30}; do
+            curl -fsS http://127.0.0.1:8001/health && exit 0 || sleep 1
+          done
+          echo "Pair-server healthcheck failed"; echo "---- LOGS ----"; tail -n 200 /tmp/hacs-pair.log; exit 1
+
+      - name: Pair flow smoke
+        run: |
+          CODE=$(curl -s -X POST http://127.0.0.1:8001/pair/start | jq -r .code)
+          test -n "$CODE"
+          curl -s -X POST http://127.0.0.1:8001/pair/finish \
+            -H "Content-Type: application/json" \
+            -d "{\"code\":\"$CODE\",\"pubkey\":\"abcdef0123456789\",\"platform\":\"ci/linux\"}" | jq -e '.token' > /dev/null
+
+  agent-build:
+    name: Agent (Go) build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Tidy & build
+        working-directory: agent
+        run: |
+          go mod tidy
+          go build -o hacs-agent main.go
+
+      - name: Upload agent artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hacs-agent-linux-amd64
+          path: agent/hacs-agent
