@@ -63,6 +63,11 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
         run: |
           docker run -d --name ci-redis -p 6379:6379 redis:7-alpine
+          # wait until Redis is ready
+          for i in {1..20}; do
+            docker exec ci-redis redis-cli ping && break
+            echo "Waiting for Redis..."; sleep 1
+          done
           nohup uvicorn main:app --host 127.0.0.1 --port 8001 > /tmp/hacs-pair.log 2>&1 &
           for i in {1..30}; do
             curl -fsS http://127.0.0.1:8001/health && exit 0 || sleep 1
