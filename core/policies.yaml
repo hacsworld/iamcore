@@ -1,0 +1,38 @@
+# core/policies.yaml
+# Базовая политика локального ИИ (безопасно по умолчанию)
+
+version: 1
+
+privacy:
+  # Жёсткий egress-файрвол: НЕЛЬЗЯ отправлять наружу ничего персонального.
+  egress_default: "deny"   # deny | allow
+  # Разрешённые облачные источники (только чтение, без персональных данных)
+  cloud_allowlist:
+    - "api.github.com"
+    - "docs.hacs.world"
+    - "ws.hacs.world"
+  # Опциональные домены партнёров — добавляются по мере интеграций.
+  cloud_partner_allowlist: []
+
+  # Простые правила маскировки чувствительных данных (PII) — расширим позже
+  pii_redaction:
+    enable: true
+    # регулярки (упрощённо), что скрывать перед любыми исходящими запросами
+    patterns:
+      - name: "email"
+        regex: "(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}"
+        replace: "[email]"
+      - name: "phone"
+        regex: "(\\+?\\d[\\d\\-\\s]{7,}\\d)"
+        replace: "[phone]"
+      - name: "card4"
+        regex: "(\\b\\d{4}\\b)"
+        replace: "[4digits]"
+
+peers:
+  # Взаимодействие между локальными ИИ — ТОЛЬКО по явному разрешению
+  enabled: false
+  # Список разрешённых peer-id (позже будем добавлять через API)
+  allowlist: []
+  # Максимальный размер сообщения между ИИ
+  max_message_bytes: 65536
