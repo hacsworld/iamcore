@@ -29,7 +29,33 @@ curl -s -X POST http://localhost:8000/act -H "Content-Type: application/json" -d
 - Seed примеров вектора в init.sql убран — соблюдайте размерность VECTOR(384)
 <!-- test commit to trigger CI -->
 # 🚀 HACS World — I'm Core  
+# HACS Local AI Agent — Production Ready
 
+Единый комплект: Go-агент + локальное ядро (FastAPI) + pair-server + docker.
+
+## Быстрый старт
+```bash
+# 1) ядро
+cd core
+python -m venv venv
+source venv/bin/activate    # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+python app.py
+
+# 2) агент
+cd ../agent
+go mod tidy
+go build -o hacs-agent main.go
+./hacs-agent   # введите 6-значный код паринга
+
+# 3) инфраструктура (опционально)
+cd ..
+cp .env.example .env
+docker compose up -d --build
+```
+Endpoints:
+- Core: `GET /health`, `POST /act`
+- Pair Server: `POST /pair/finish`
 This repository is part of the **HACS World** initiative — building decentralized, resonant AI systems.  
 It is not just code — it is **resonance, built on the Volkov Law**.  
 
