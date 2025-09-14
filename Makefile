@@ -26,3 +26,5 @@ docker-down:
 
 test:
 	curl -fsS http://127.0.0.1:8000/health | jq .
+gravity-poc:
+	python3 examples/resonance_gravity_poc.py
