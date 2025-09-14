@@ -4,26 +4,30 @@ services:
   nats:
     image: nats:2.10-alpine
     container_name: iamcore-nats-1
+    command: ["sh","-lc","apk add --no-cache netcat-openbsd >/dev/null 2>&1 || true; exec nats-server -js -sd /data"]
     ports:
-      - "4222:4222"
-      - "8222:8222"   # web dashboard (опционально)
-    command: ["-js"]  # включаем JetStream
+      - "4222:4222"  # NATS
+      - "8222:8222"  # (опционально) мониторинг, если включишь -m 8222
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "4222"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 12
+    volumes:
+      - nats_data:/data
     restart: unless-stopped
 
   vector:
     image: ankane/pgvector
     container_name: iamcore-vector-1
-    ports:
-      - "5432:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: iamcore
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
     restart: unless-stopped
 
   cache:
@@ -31,17 +35,20 @@ services:
     container_name: iamcore-cache-1
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
     restart: unless-stopped
 
   ai-core:
     build: ./core
     container_name: iamcore-ai-core-1
     depends_on:
-      - nats
-      - vector
-      - cache
-    ports:
-      - "8000:8000"
+      nats:
+        condition: service_healthy
+      vector:
+        condition: service_started
+      cache:
+        condition: service_started
     environment:
       - NATS_URL=nats://nats:4222
       - REDIS_URL=redis://cache:6379
@@ -49,4 +56,12 @@ services:
       - PGUSER=postgres
       - PGPASSWORD=postgres
       - PGDATABASE=iamcore
+      # при желании добавь PGPORT=5432
+    ports:
+      - "8000:8000"
     restart: unless-stopped
+
+volumes:
+  nats_data:
+  pg_data:
+  redis_data:
