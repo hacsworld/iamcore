@@ -5,8 +5,9 @@ import numpy as np
 import uvicorn
 import random
 
-from core.privacy import load_policy, redact_pii
-from core.peers import resonant_exchange
+from .privacy import load_policy, redact_pii
+from .peers import resonant_exchange
+
 
 app = FastAPI(title="HACS Core (Local)", version="2.4")
 
