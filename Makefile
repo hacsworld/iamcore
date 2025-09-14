@@ -1,22 +1,28 @@
-.PHONY: up down logs health seed lint test
+.PHONY: help setup run build-agent clean docker-up docker-down test
 
-up:
-	docker compose -f docker-compose.ai.yml up -d --build
+help:
+	@echo "Targets:"
+	@echo "  setup        - create venv & install core deps"
+	@echo "  run          - run local core (uvicorn)"
+	@echo "  build-agent  - build Go agent binary"
+	@echo "  docker-up    - docker compose up -d"
+	@echo "  docker-down  - docker compose down"
+	@echo "  test         - quick health tests"
 
-down:
-	docker compose -f docker-compose.ai.yml down -v
+setup:
+	cd core && python -m venv venv && . venv/bin/activate && pip install -r requirements.txt
 
-logs:
-	docker compose -f docker-compose.ai.yml logs -f --tail=200 ai-core
+run:
+	cd core && . venv/bin/activate && python app.py
 
-health:
-	curl -s http://localhost:8000/health | jq
+build-agent:
+	cd agent && go mod tidy && go build -o hacs-agent main.go
 
-seed:
-	docker compose -f docker-compose.ai.yml exec vector psql -U postgres -d hacs -c "INSERT INTO items(embedding,text,metadata) VALUES('[0.001$(for i in $$(seq 2 384); do printf ",0.001"; done)]', 'Local context example', '{"source":"seed"}');"
+docker-up:
+	docker compose up -d --build
 
-lint:
-	@echo "✔️  (опц.) подключи ruff/black/mypy в отдельном tox/pyproject"
+docker-down:
+	docker compose down
 
 test:
-	curl -s -X POST http://localhost:8000/act -H "Content-Type: application/json" -d '{"text":"what is resonance?"}' | jq
+	curl -fsS http://127.0.0.1:8000/health | jq .

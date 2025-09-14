@@ -1,0 +1,12 @@
+[Unit]
+Description=HACS Local AI Agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/iamcore/agent/hacs-agent
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
