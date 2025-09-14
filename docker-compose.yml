@@ -27,7 +27,8 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
-
+      - PAIR_JWT_SECRET=${PAIR_JWT_SECRET}
+      - PAIR_JWT_TTL=3600
   redis:
     image: redis:7-alpine
     ports:
