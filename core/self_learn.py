@@ -166,4 +166,4 @@ class ResonanceMemory:
     def _norm(v: np.ndarray) -> np.ndarray:
         n = float(np.linalg.norm(v) + 1e-9)
         return (v / n).astype(np.float32)
----
+
