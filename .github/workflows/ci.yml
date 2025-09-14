@@ -1,2 +1,66 @@
-chore: add macOS installer & launchd plist; overhaul CI pipeline
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  core:
+    name: Core smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip setuptools wheel
+      - run: pip install -r core/requirements.txt
+      - name: Import check
+        run: python -c "import sentence_transformers; print('embedder ok')"
+      - name: Health check
+        working-directory: core
+        run: |
+          nohup python app.py > /tmp/core.log 2>&1 &
+          for i in {1..30}; do
+            curl -fsS http://127.0.0.1:8000/health && exit 0 || sleep 1
+          done
+          echo "Core not ready"; tail -n 200 /tmp/core.log; exit 1
+
+  pair_server:
+    name: Pair-server smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip setuptools wheel
+      - run: pip install -r pair-server/requirements.txt
+      - name: Start & health
+        working-directory: pair-server
+        env:
+          # Redis не обязателен для 200/health, поэтому без docker
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          nohup uvicorn main:app --host 127.0.0.1 --port 8001 > /tmp/pair.log 2>&1 &
+          for i in {1..30}; do
+            curl -fsS http://127.0.0.1:8001/health && exit 0 || sleep 1
+          done
+          echo "Pair-server not ready"; tail -n 200 /tmp/pair.log; exit 1
+
+  agent:
+    name: Agent build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Build
+        working-directory: agent
+        run: |
+          go mod tidy
+          go build -o hacs-agent main.go
 
