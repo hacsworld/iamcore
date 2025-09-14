@@ -194,7 +194,7 @@ func processIntent(reqID, text string) {
 			"type":    "act_result",
 			"req_id":  reqID,
 			"result":  result,
-			"local":   True,
+			"local":   true,
 		}
 		if err := wsConn.WriteJSON(response); err != nil {
 			log.Printf("❌ Failed to send response: %v", err)
