@@ -1,41 +1,52 @@
-version: '3.8'
+version: "3.9"
 
 services:
-  core:
-    image: python:3.11-slim
-    working_dir: /app
-    volumes:
-      - ./core:/app
-    command: bash -lc "pip install -r requirements.txt && python app.py"
+  nats:
+    image: nats:2.10-alpine
+    container_name: iamcore-nats-1
     ports:
-      - "8000:8000"
+      - "4222:4222"
+      - "8222:8222"   # web dashboard (опционально)
+    command: ["-js"]  # включаем JetStream
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      test: ["CMD", "nc", "-z", "localhost", "4222"]
       interval: 10s
-      timeout: 3s
-      retries: 5
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
-  pair-server:
-    build: ./pair-server
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - WS_URL=wss://ws.hacs.world/agent
-      - PAIR_SECRET=${PAIR_SECRET}
+  vector:
+    image: ankane/pgvector
+    container_name: iamcore-vector-1
     ports:
-      - "8001:8000"
-    depends_on:
-      - redis
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: iamcore
     restart: unless-stopped
-      - PAIR_JWT_SECRET=${PAIR_JWT_SECRET}
-      - PAIR_JWT_TTL=3600
-  redis:
+
+  cache:
     image: redis:7-alpine
+    container_name: iamcore-cache-1
     ports:
       - "6379:6379"
-    volumes:
-      - redis_data:/data
     restart: unless-stopped
 
-volumes:
-  redis_data:
+  ai-core:
+    build: ./core
+    container_name: iamcore-ai-core-1
+    depends_on:
+      - nats
+      - vector
+      - cache
+    ports:
+      - "8000:8000"
+    environment:
+      - NATS_URL=nats://nats:4222
+      - REDIS_URL=redis://cache:6379
+      - PGHOST=vector
+      - PGUSER=postgres
+      - PGPASSWORD=postgres
+      - PGDATABASE=iamcore
+    restart: unless-stopped
