@@ -3,14 +3,19 @@ from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import uvicorn
-import random  # <— для харизматичных фраз
+import random
 
-app = FastAPI(title="HACS Core (Local)", version="2.3")
+from core.privacy import load_policy, redact_pii
+from core.peers import resonant_exchange
+
+app = FastAPI(title="HACS Core (Local)", version="2.4")
+
+# === Policies (privacy & peers) ===
+POLICY = load_policy()
 
 # === Embeddings ===
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# Простейшая локальная база знаний
 KNOWLEDGE_BASE = [
     {"text": "Open settings and configure preferences"},
     {"text": "Create a new note or document"},
@@ -24,104 +29,89 @@ KNOWLEDGE_BASE = [
     {"text": "Translate languages in real-time"},
 ]
 
-# Предрасчёт эмбеддингов для базы
 knowledge_embeddings = np.array([model.encode(item["text"]) for item in KNOWLEDGE_BASE])
 
 class IntentRequest(BaseModel):
     text: str
 
-def cosine_similarity(query_embedding, knowledge_embeddings):
-    """Cosine similarity между запросом и базой знаний"""
-    query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-9)
-    knowledge_norm = knowledge_embeddings / (np.linalg.norm(knowledge_embeddings, axis=1, keepdims=True) + 1e-9)
-    similarities = np.dot(knowledge_norm, query_norm)
-    return similarities
-
-# === Харизма / стиль ответа ===
 PERSONA_PHRASES = [
     "🔥 Держи свежак!",
     "😎 Вот так это делается!",
-    "✨ Проверил — всё сходится!",
+    "✨ Всё сходится.",
     "💡 Подкинул идею на резонансе!",
-    "🚀 Поехали по простому и по делу.",
+    "🚀 Поехали просто и по делу.",
     "👌 Лаконично и чётко.",
 ]
 
 def style_response(payload: dict, tone: str = "friendly") -> dict:
-    """
-    Оборачиваем сухой результат в «живой» ответ.
-    Ничего не ломаем — просто добавляем поля 'style' и 'persona'.
-    """
-    styled = dict(payload)  # копия
+    styled = dict(payload)
     styled["style"] = random.choice(PERSONA_PHRASES)
-    styled["persona"] = {
-        "tone": tone,           # friendly | chill | confident — на будущее
-        "brevity": "concise",   # лаконично
-        "emoji": True,          # можно выключить позже политикой
-    }
+    styled["persona"] = {"tone": tone, "brevity": "concise", "emoji": True}
     return styled
+
+def cosine_similarity(query_embedding, knowledge_embeddings):
+    q = query_embedding / (np.linalg.norm(query_embedding) + 1e-9)
+    k = knowledge_embeddings / (np.linalg.norm(knowledge_embeddings, axis=1, keepdims=True) + 1e-9)
+    return np.dot(k, q)
 
 @app.post("/act")
 async def process_intent(request: IntentRequest):
-    """
-    Обрабатываем интент локально:
-    - эмбеддинг запроса
-    - поиск ближайших смыслов (top-3)
-    - простая «резонансная» оценка
-    - харизматичная обёртка ответа
-    """
     try:
-        # 1) Вектор запроса
-        query_embedding = model.encode(request.text)
+        # приватная обработка текста: маскируем PII (внутри запроса дальше по пайплайну)
+        safe_text = redact_pii(request.text, POLICY)
 
-        # 2) Сходство с базой
-        similarities = cosine_similarity(query_embedding, knowledge_embeddings)
-        top_indices = np.argsort(similarities)[-3:][::-1]  # Top-3
+        q_emb = model.encode(safe_text)
+        sims = cosine_similarity(q_emb, knowledge_embeddings)
+        top_idx = np.argsort(sims)[-3:][::-1]
 
-        results = []
-        for idx in top_indices:
-            results.append({
-                "text": KNOWLEDGE_BASE[idx]["text"],
-                "similarity": float(similarities[idx]),
-            })
+        results = [{"text": KNOWLEDGE_BASE[i]["text"], "similarity": float(sims[i])} for i in top_idx]
+        best = float(sims[top_idx[0]]) if len(top_idx) else 0.0
 
-        # 3) Резонанс
-        best_match = float(similarities[top_indices[0]]) if len(top_indices) > 0 else 0.0
-        status = "EXECUTE" if best_match > 0.6 else "REFINE"
-
-        base_payload = {
+        status = "EXECUTE" if best > 0.6 else "REFINE"
+        base = {
             "status": status,
             "resonance": {
-                "purity": best_match,
-                "decay": float(1.0 - best_match),
+                "purity": best,
+                "decay": float(1.0 - best),
                 "gain": 0.9,
-                "strength": float(best_match * 0.9),
+                "strength": float(best * 0.9),
             },
             "context": results,
             "local": True,
         }
 
-        # 4) Харизма ✨
-        return style_response(base_payload, tone="friendly")
+        # === Авто-обмен по резонансу (без подтверждений) ===
+        # Если уверенность ниже порога политики — пробуем «обмен с пирамии».
+        if POLICY.peers_enabled and best < POLICY.peers_resonance_threshold:
+            px = resonant_exchange(safe_text, results, max_peers=POLICY.peers_max_peers)
+            base["peers"] = {
+                "auto_exchange": True,
+                "used_peers": int(px.get("used_peers", 0)),
+                "hints": px.get("hints", []),
+            }
+            # Если пировые подсказки есть — усилим контекст и поднимем статус до EXECUTE-lite
+            if base["peers"]["used_peers"] > 0 and status == "REFINE":
+                base["status"] = "EXECUTE_HINTS"
+
+        return style_response(base)
 
     except Exception as e:
-        error_payload = {
-            "status": "ERROR",
-            "error": str(e),
-            "local": True,
-        }
-        return style_response(error_payload, tone="confident")
+        return style_response({"status": "ERROR", "error": str(e), "local": True}, tone="confident")
 
 @app.get("/health")
 async def health_check():
-    """Health-check для CI/мониторинга"""
     return {
         "status": "OK",
         "service": "HACS Local Core",
-        "version": "2.3",
+        "version": "2.4",
         "model": "all-MiniLM-L6-v2",
+        "policy": {
+            "peers_enabled": POLICY.peers_enabled,
+            "resonance_threshold": POLICY.peers_resonance_threshold
+        }
     }
 
 if __name__ == "__main__":
     print("🚀 Starting HACS Local Core on http://127.0.0.1:8000")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+
