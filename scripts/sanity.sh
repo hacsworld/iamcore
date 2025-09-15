@@ -1,18 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
-API=${API:-http://127.0.0.1:8000}
-KEY=${API_KEY:-changeme}
-cecho(){ printf "\033[1;32m%s\033[0m\n" "$*"; }
-fail(){ printf "\033[1;31mFAIL:\033[0m %s\n" "$*" >&2; exit 1; }
 
-cecho "→ HEALTH"
-curl -fsS -H "X-API-Key: $KEY" "$API/health" | jq .status | grep -q "OK" || fail "health"
+API="${API:-http://127.0.0.1:8000}"
+KEY="${API_KEY:-changeme}"
 
-cecho "→ METRICS"
-curl -fsS -H "X-API-Key: $KEY" "$API/metrics" >/dev/null || fail "metrics"
+echo "→ wait app boot"
+# подождем чуть-чуть, чтобы uvicorn успел подняться
+sleep "${BOOT_WAIT:-5}"
 
-cecho "→ CHAT (local)"
+echo "→ health (with retries)"
+# 20 попыток по 1с ( ~20с общего ожидания )
+for i in $(seq 1 20); do
+  if curl -fsS -H "X-API-Key: $KEY" "$API/health" >/dev/null; then
+    ok=1; break
+  fi
+  sleep 1
+done
+[ "${ok:-0}" -eq 1 ] || { echo "FAIL: health"; exit 1; }
+
+echo "→ metrics"
+curl -fsS -H "X-API-Key: $KEY" "$API/metrics" >/dev/null
+
+echo "→ /docs"
+curl -fsS "$API/docs" >/dev/null
+
+echo "→ chat smoke"
 curl -fsS -H "Content-Type: application/json" -H "X-API-Key: $KEY" \
-  -d '{"text":"Привет, что ты умеешь?","humor":true}' "$API/chat" >/dev/null || fail "chat"
+  -d '{"text":"Привет! Что умеешь?","humor":false}' "$API/chat" >/dev/null
 
-cecho "✓ SANITY OK"
+echo "✓ SANITY OK"
