@@ -6,6 +6,19 @@ on:
   pull_request:
     branches: [ "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/hacs-core
+  CI_API_KEY: ci-test-key                 # ключ для /health и sanity
+  HOST_PORT: "18000"                      # внешний порт раннера (внутри контейнера слушаем 8000)
+
 jobs:
   build-and-smoke:
     runs-on: ubuntu-latest
@@ -13,13 +26,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install deps for smoke
+      - name: Install deps for smoke (curl+jq)
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+          sudo apt-get install -y --no-install-recommends curl jq
 
       - name: Build image (core)
         run: |
@@ -27,18 +37,19 @@ jobs:
 
       - name: Prepare CI .env (no secrets)
         run: |
+          mkdir -p core
           cat > core/.env.ci <<'EOF'
-          API_KEY=ci-test-key
+          API_KEY=${{ env.CI_API_KEY }}
           ALLOWLIST=wikipedia.org,docs.python.org,ffmpeg.org,arxiv.org,github.com,x.ai
           USE_GENERATION=none
           GROK_API_KEY=
           GROK_MODEL=grok-4-fast
           OLLAMA_MODEL=llama3.1:8b
-          AUTOSAVE_SEC=5
+          AUTOSAVE_SEC=10
           MEMORY_PATH=./state/memory.json
           HUMOR_MODE=friendly
           REGION=ru-RU
-          HUMOR_USER_NAME=бот
+          HUMOR_USER_NAME=бро
           EOF
 
       - name: Run container
@@ -46,67 +57,67 @@ jobs:
           mkdir -p data/state data/outputs data/vault
           docker run -d --name hacs-ci \
             --env-file core/.env.ci \
-            -p 8000:8000 \
+            -p $HOST_PORT:8000 \
             -v $PWD/data/state:/app/state \
             -v $PWD/data/outputs:/app/outputs \
             -v $PWD/data/vault:/app/vault:ro \
             hacs-core:test
-          for i in {1..30}; do
-            if curl -fsS -H "X-API-Key: ci-test-key" http://127.0.0.1:8000/health >/dev/null; then
-              echo "service is up"; break; fi; sleep 1
+
+          echo "→ wait for /health on http://127.0.0.1:${HOST_PORT}"
+          for i in {1..90}; do
+            if curl -fsS -H "X-API-Key: $CI_API_KEY" http://127.0.0.1:${HOST_PORT}/health >/dev/null; then
+              echo "service is up"; exit 0
+            fi
+            sleep 1
           done
+          echo "Service did not become ready in time"
+          docker logs hacs-ci || true
+          exit 1
 
       - name: Smoke (sanity light)
         env:
-          API: http://127.0.0.1:8000
-          API_KEY: ci-test-key
-          SKIP_CLOUD: "1"
+          API: http://127.0.0.1:${{ env.HOST_PORT }}
+          API_KEY: ${{ env.CI_API_KEY }}
         run: |
           bash scripts/sanity.sh
 
       - name: Show logs on failure
         if: failure()
         run: |
-          docker logs hacs-ci || true
+          docker ps -a
+          echo "---- container logs ----"
+          docker logs --tail=200 hacs-ci || true
 
       - name: Stop container
         if: always()
         run: |
           docker rm -f hacs-ci || true
 
-  # OPTIONAL: push to GHCR — скипнется, если токена нет
   push-image:
     needs: build-and-smoke
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Check GHCR token
-        id: guard
-        shell: bash
-        run: |
-          if [ -z "${{ secrets.GHCR_TOKEN }}" ]; then
-            echo "has=0" >> "$GITHUB_OUTPUT"
-          else
-            echo "has=1" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Skip (no token)
-        if: steps.guard.outputs.has == '0'
-        run: echo "No GHCR token; skipping push."
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
-        if: steps.guard.outputs.has == '1'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Build & push
-        if: steps.guard.outputs.has == '1'
-        run: |
-          IMAGE=ghcr.io/${{ github.repository }}/hacs-core:${{ github.sha }}
-          docker build -t "$IMAGE" ./core
-          docker push "$IMAGE"
+      - name: Build & Push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./core
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPO }}:latest
+            ${{ env.IMAGE_REPO }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
