@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import json
 import httpx
 
 """
@@ -51,10 +50,8 @@ def _gen_with_grok(prompt: str, api_key: str, model: str, timeout_s: float = 60.
             r = c.post(url, headers=headers, json=body)
         r.raise_for_status()
         data = r.json()
-        # expected shape: {"choices":[{"message":{"content": "..."}}, ...]}
         return (data["choices"][0]["message"]["content"] or "").strip()
     except Exception as e:
-        # include minimal debug info but avoid leaking secrets
         try:
             err_detail = r.text[:200] if "r" in locals() and isinstance(r.text, str) else ""
         except Exception:
@@ -72,7 +69,6 @@ def generate_answer(system_hint: str, question: str, context: str) -> str:
     if backend == "none":
         return ""
 
-    # unified prompt
     prompt = (
         f"{system_hint}\n\n"
         f"Question:\n{question}\n\n"
@@ -85,16 +81,10 @@ def generate_answer(system_hint: str, question: str, context: str) -> str:
         return _gen_with_ollama(prompt, model)
 
     if backend == "grok":
-    api_key = os.getenv("GROK_API_KEY", "")
-    if not api_key:
-        return "[gen-error: GROK_API_KEY missing]"
-    model = os.getenv("GROK_MODEL", "grok-4-fast")
-    return _gen_with_grok(prompt, api_key, model)
+        api_key = os.getenv("GROK_API_KEY", "")
+        if not api_key:
+            return "[gen-error: GROK_API_KEY missing]"
+        model = os.getenv("GROK_MODEL", "grok-4-fast")
+        return _gen_with_grok(prompt, api_key, model)
 
-    # unknown backend value: behave as none
     return ""
-
-        if not key: return "[gen-error: GROK_API_KEY missing]"
-        return _gen_with_grok(prompt, key)
-    return ""
-
