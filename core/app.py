@@ -381,6 +381,160 @@ async def list_autopaths():
     return {"present": present, "missing": missing}
 
 # ===== Entrypoint =====
+# ====== VIDEO: generation & real-time capture ======
+from typing import Optional
+import threading, queue, datetime
+from pydantic import BaseModel
+
+try:
+    from .video_tools import make_slideshow_from_images, concat_videos
+except Exception:
+    from video_tools import make_slideshow_from_images, concat_videos
+
+# ---------- Models for requests ----------
+class SlideShowReq(BaseModel):
+    images: List[str]               # список локальных путей к фото
+    out_path: Optional[str] = None  # куда сохранить mp4 (по умолчанию core/outputs/VID_YYYYmmdd_HHMMSS.mp4)
+    duration_per_image: float = 2.0
+    kenburns: bool = True
+    captions: Optional[List[str]] = None
+    bgm_path: Optional[str] = None  # путь к аудио
+
+class ConcatReq(BaseModel):
+    videos: List[str]               # список локальных путей к видео
+    out_path: Optional[str] = None
+
+@app.post("/video/make/slideshow")
+async def video_make_slideshow(req: SlideShowReq):
+    try:
+        out = req.out_path or f"./outputs/VID_{datetime.datetime.now():%Y%m%d_%H%M%S}.mp4"
+        path = make_slideshow_from_images(
+            images=req.images,
+            out_path=out,
+            duration_per_image=req.duration_per_image,
+            kenburns=req.kenburns,
+            captions=req.captions,
+            bgm_path=req.bgm_path
+        )
+        return {"status": "OK", "path": str(path)}
+    except Exception as e:
+        return {"status": "ERROR", "error": str(e)}
+
+@app.post("/video/make/concat")
+async def video_make_concat(req: ConcatReq):
+    try:
+        out = req.out_path or f"./outputs/VID_{datetime.datetime.now():%Y%m%d_%H%M%S}.mp4"
+        path = concat_videos(req.videos, out)
+        return {"status": "OK", "path": str(path)}
+    except Exception as e:
+        return {"status": "ERROR", "error": str(e)}
+
+# ---------- Camera recorder ----------
+import cv2
+_REC_STATE = {
+    "camera": {"thread": None, "stop": False, "path": None, "fps": 30, "size": (1280,720)},
+    "mic":    {"thread": None, "stop": False, "path": None, "rate": 48000, "channels": 1}
+}
+
+def _record_camera_worker(device_index: int, out_path: str, fps: int, size: tuple):
+    cap = cv2.VideoCapture(device_index)
+    if size:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, size[0])
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, size[1])
+    cap.set(cv2.CAP_PROP_FPS, fps)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    writer = cv2.VideoWriter(out_path, fourcc, fps, size)
+
+    try:
+        while not _REC_STATE["camera"]["stop"]:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame = cv2.resize(frame, size)
+            writer.write(frame)
+    finally:
+        writer.release()
+        cap.release()
+
+@app.post("/video/record/camera/start")
+async def camera_start(
+    device_index: int = 0,
+    fps: int = 30,
+    width: int = 1280,
+    height: int = 720,
+    out_path: str = Form(default="")
+):
+    if _REC_STATE["camera"]["thread"] and _REC_STATE["camera"]["thread"].is_alive():
+        return {"status": "ERROR", "error": "Camera is already recording"}
+    path = out_path or f"./outputs/CAM_{datetime.datetime.now():%Y%m%d_%H%M%S}.mp4"
+    _REC_STATE["camera"].update({"stop": False, "path": path, "fps": fps, "size": (width, height)})
+    t = threading.Thread(target=_record_camera_worker, args=(device_index, path, fps, (width, height)), daemon=True)
+    _REC_STATE["camera"]["thread"] = t
+    t.start()
+    return {"status": "OK", "path": path, "fps": fps, "size": [width, height]}
+
+@app.post("/video/record/camera/stop")
+async def camera_stop():
+    if not _REC_STATE["camera"]["thread"]:
+        return {"status": "ERROR", "error": "Camera recorder not running"}
+    _REC_STATE["camera"]["stop"] = True
+    _REC_STATE["camera"]["thread"].join(timeout=5)
+    path = _REC_STATE["camera"]["path"]
+    _REC_STATE["camera"]["thread"] = None
+    _REC_STATE["camera"]["stop"] = False
+    return {"status": "OK", "path": path}
+
+# ---------- Mic recorder ----------
+import sounddevice as sd
+import soundfile as sf
+
+def _record_mic_worker(out_path: str, rate: int, channels: int):
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with sf.SoundFile(out_path, mode='w', samplerate=rate, channels=channels, subtype='PCM_16') as file:
+        def callback(indata, frames, time, status):
+            if _REC_STATE["mic"]["stop"]:
+                raise sd.CallbackStop
+            file.write(indata.copy())
+        with sd.InputStream(samplerate=rate, channels=channels, callback=callback):
+            while not _REC_STATE["mic"]["stop"]:
+                sd.sleep(100)
+
+@app.post("/video/record/mic/start")
+async def mic_start(
+    rate: int = 48000,
+    channels: int = 1,
+    out_path: str = Form(default="")
+):
+    if _REC_STATE["mic"]["thread"] and _REC_STATE["mic"]["thread"].is_alive():
+        return {"status": "ERROR", "error": "Mic is already recording"}
+    path = out_path or f"./outputs/MIC_{datetime.datetime.now():%Y%m%d_%H%M%S}.wav"
+    _REC_STATE["mic"].update({"stop": False, "path": path, "rate": rate, "channels": channels})
+    t = threading.Thread(target=_record_mic_worker, args=(path, rate, channels), daemon=True)
+    _REC_STATE["mic"]["thread"] = t
+    t.start()
+    return {"status": "OK", "path": path, "rate": rate, "channels": channels}
+
+@app.post("/video/record/mic/stop")
+async def mic_stop():
+    if not _REC_STATE["mic"]["thread"]:
+        return {"status": "ERROR", "error": "Mic recorder not running"}
+    _REC_STATE["mic"]["stop"] = True
+    _REC_STATE["mic"]["thread"].join(timeout=5)
+    path = _REC_STATE["mic"]["path"]
+    _REC_STATE["mic"]["thread"] = None
+    _REC_STATE["mic"]["stop"] = False
+    return {"status": "OK", "path": path}
+
+@app.get("/video/status")
+async def video_status():
+    def _alive(name):
+        th = _REC_STATE[name]["thread"]
+        return bool(th and th.is_alive())
+    return {
+        "camera": {"recording": _alive("camera"), "path": _REC_STATE["camera"]["path"]},
+        "mic": {"recording": _alive("mic"), "path": _REC_STATE["mic"]["path"]}
+    }
 if __name__ == "__main__":
     print("🚀 Starting HACS Local Core on http://127.0.0.1:8000")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
