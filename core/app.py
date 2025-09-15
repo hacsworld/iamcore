@@ -202,3 +202,37 @@ async def memory_files_stats():
 if __name__ == "__main__":
     print("🚀 Starting HACS Local Core on http://127.0.0.1:8000")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+# ...твой app.py код выше...
+
+import pathlib
+
+AUTO_PATHS = [
+    pathlib.Path.home() / "Documents",
+    pathlib.Path.home() / "Downloads",
+    pathlib.Path.home() / "Pictures",
+    pathlib.Path.home() / "Desktop"
+]
+
+@app.on_event("startup")
+async def auto_bootstrap():
+    print("📂 Scanning local storage for files...")
+    for base in AUTO_PATHS:
+        if not base.exists():
+            continue
+        for f in base.rglob("*"):
+            if not f.is_file():
+                continue
+            try:
+                data = f.read_bytes()
+                kind, text = sniff_and_read(f.name, data)
+                if (text or "").strip():
+                    _ingest_text_payload(f.name, text, "auto")
+                    print(f"  [+] Ingested {f}")
+            except Exception as e:
+                print(f"  [!] Skip {f}: {e}")
+    print("✅ Bootstrap complete.")
+
+# ---------- Entrypoint ----------
+if __name__ == "__main__":
+    print("🚀 Starting HACS Local Core on http://127.0.0.1:8000")
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
