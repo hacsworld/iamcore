@@ -233,6 +233,108 @@ async def auto_bootstrap():
     print("✅ Bootstrap complete.")
 
 # ---------- Entrypoint ----------
+# ====== Auto-scan helpers & endpoints (put above __main__) ======
+import pathlib, time, os
+from typing import List as _List
+
+# каталоги для автозагрузки при старте (у тебя уже есть on_startup — оставляй)
+AUTO_PATHS = [
+    pathlib.Path.home() / "Documents",
+    pathlib.Path.home() / "Downloads",
+    pathlib.Path.home() / "Pictures",
+    pathlib.Path.home() / "Desktop",
+]
+
+# простейший кэш индекса, чтобы не перегрызать одни и те же файлы в рамках одной сессии
+# ключ: абсолютный путь; значение: (size, mtime)
+INDEX_CACHE: dict[str, tuple[int, float]] = {}
+
+def _should_ingest(path: pathlib.Path) -> bool:
+    """Грузим файл, только если он новый или изменился (по size/mtime)."""
+    try:
+        st = path.stat()
+        key = str(path.resolve())
+        prev = INDEX_CACHE.get(key)
+        cur = (st.st_size, st.st_mtime)
+        if prev == cur:
+            return False
+        INDEX_CACHE[key] = cur
+        return True
+    except Exception:
+        return False
+
+def _scan_one_file(fpath: pathlib.Path, tag: str) -> dict:
+    """Скан одного файла с защитой от падений."""
+    try:
+        data = fpath.read_bytes()
+        kind, text = sniff_and_read(fpath.name, data)
+        if not (text or "").strip():
+            return {"filename": str(fpath), "kind": kind, "ingested_chunks": 0, "approx_chars": 0}
+        res = _ingest_text_payload(fpath.name, text, tag)
+        return {"filename": str(fpath), "kind": kind, **res}
+    except Exception as e:
+        return {"filename": str(fpath), "error": str(e), "kind": "unknown", "ingested_chunks": 0, "approx_chars": 0}
+
+def _iter_files(base: pathlib.Path, recursive: bool) -> _List[pathlib.Path]:
+    if not base.exists() or not base.is_dir():
+        return []
+    if recursive:
+        return [p for p in base.rglob("*") if p.is_file()]
+    else:
+        return [p for p in base.iterdir() if p.is_file()]
+
+@app.post("/ingest/scan")
+async def ingest_scan(
+    path: str = Form(default=""),            # пусто = сканируем AUTO_PATHS
+    tag: str = Form(default="auto"),
+    recursive: bool = Form(default=True)
+):
+    """
+    Ручной рескан локального хранилища.
+    - Если `path` пустой → сканируем AUTO_PATHS (Documents/Downloads/Pictures/Desktop).
+    - Если `path` указан → сканируем только эту папку.
+    - `recursive` управляет рекурсией.
+    """
+    started = time.time()
+    bases: _List[pathlib.Path] = []
+
+    if path.strip():
+        base = pathlib.Path(path).expanduser()
+        if not base.exists() or not base.is_dir():
+            return {"status": "ERROR", "error": f"Path not found or not a directory: {base}"}
+        bases = [base]
+    else:
+        bases = [p for p in AUTO_PATHS if p.exists()]
+
+    scanned_files = 0
+    processed = []
+    for base in bases:
+        for f in _iter_files(base, recursive=recursive):
+            scanned_files += 1
+            if not _should_ingest(f):
+                continue
+            processed.append(_scan_one_file(f, tag))
+
+    took = round(time.time() - started, 3)
+    ingested = sum(1 for r in processed if r.get("ingested_chunks", 0) > 0)
+    errors = [r for r in processed if "error" in r]
+
+    return {
+        "status": "OK",
+        "scanned_dirs": [str(b) for b in bases],
+        "scanned_files": scanned_files,
+        "ingested_files": ingested,
+        "errors": len(errors),
+        "took_sec": took,
+        "details": processed[:100]  # чтобы ответ не раздувать; убери лимит если хочешь полный лог
+    }
+
+@app.get("/ingest/autopaths")
+async def list_autopaths():
+    """Подсказка: какие папки считаем 'галереей/хранилищами' по умолчанию."""
+    present = [str(p) for p in AUTO_PATHS if p.exists()]
+    missing = [str(p) for p in AUTO_PATHS if not p.exists()]
+    return {"present": present, "missing": missing}
 if __name__ == "__main__":
     print("🚀 Starting HACS Local Core on http://127.0.0.1:8000")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
