@@ -1,11 +1,7 @@
+# env & local
 core/.env
-data/
-*.zip
 *.pyc
-pycache/
-*.tmp
-/tmp/
+__pycache__/
 *.log
-.vscode/
-.idea/
+.tmp/
 
