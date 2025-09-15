@@ -85,11 +85,11 @@ def generate_answer(system_hint: str, question: str, context: str) -> str:
         return _gen_with_ollama(prompt, model)
 
     if backend == "grok":
-        api_key = os.getenv("GROK_API_KEY", "")
-        if not api_key:
-            return "[gen-error: GROK_API_KEY missing]"
-        model = os.getenv("GROK_MODEL", "grok-4-fast")
-        return _gen_with_grok(prompt, api_key, model)
+    api_key = os.getenv("GROK_API_KEY", "")
+    if not api_key:
+        return "[gen-error: GROK_API_KEY missing]"
+    model = os.getenv("GROK_MODEL", "grok-4-fast")
+    return _gen_with_grok(prompt, api_key, model)
 
     # unknown backend value: behave as none
     return ""
