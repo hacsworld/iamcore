@@ -66,7 +66,7 @@ try:
 except Exception:
     from cloud_gate import CloudGateEssence
 CLOUD_ALLOW = ALLOWLIST or ["wikipedia.org","docs.python.org","ffmpeg.org","arxiv.org","github.com","x.ai"]
-CLOUD = CloudGateEssence(lambda x: model.encode(x), allow_domains=CLOUD_ALLOW, timeout_s=10.0)
+CLOUD = CloudGateEssence(lambda x: model.encode(x), timeout_s=10.0)
 # ===== Vault =====
 try:
     from .storage_vault import export_vault, import_vault
@@ -310,7 +310,7 @@ class CloudReq(BaseModel):
 
 @app.post("/cloud/accelerate")
 async def cloud_accelerate(req: CloudReq, dep: bool = Depends(require_key)):
-    cg = CloudGateEssence(lambda x: model.encode(x), allow_domains=(req.allow or CLOUD_ALLOW))
+    cg = CloudGateEssence(lambda x: model.encode(x))
     res = cg.gate_essence(req.text, k_search=max(3,req.k_docs*2), k_docs=req.k_docs, top_k_sent=req.top_k_sent)
     ing = 0
     for d in res["distilled"]:
