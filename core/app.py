@@ -2,30 +2,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import uvicorn, os, pathlib, time, hashlib, datetime, threading, json
 import numpy as np
 
-# ===== Embeddings (офлайн режим для CI через EMBED_BACKEND=dummy) =====
-EMBED_BACKEND = os.getenv("EMBED_BACKEND", "st")  # st | dummy
-EMBED_MODEL = os.getenv("EMBED_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
-
-if EMBED_BACKEND == "dummy":
-    import hashlib as _hl
-    class _DummyEncoder:
-        def encode(self, x):
-            s = x if isinstance(x, str) else str(x)
-            seed = int(_hl.sha1(s.encode("utf-8", errors="ignore")).hexdigest()[:8], 16) & 0xFFFFFFFF
-            rng = np.random.default_rng(seed)
-            return rng.standard_normal(384).astype(np.float32)
-    model = _DummyEncoder()
-else:
-    from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer(EMBED_MODEL)
-
-# ===== Generation / Humor =====
+from sentence_transformers import SentenceTransformer
 from generation import generate_answer, use_generation
 from humor import HumorEngine
 
@@ -42,51 +25,41 @@ def require_key(x_api_key: str = Header(default="")):
         raise HTTPException(401, detail="Invalid API key")
     return True
 
+# ===== Embeddings =====
+model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+
 # ===== Memory =====
-try:
-    from .memory import ResonanceMemory
-except Exception:
-    from memory import ResonanceMemory
+from memory import ResonanceMemory
 MEMORY = ResonanceMemory(dim=len(model.encode("ok")), k=8, save_every=100)
 
 # ===== Readers / Essence / Cloud =====
-try:
-    from .readers import sniff_and_read
-except Exception:
-    from readers import sniff_and_read
-
-try:
-    from .resonance import EssenceDistiller
-except Exception:
-    from resonance import EssenceDistiller
+from readers import sniff_and_read
+from resonance import EssenceDistiller
 DISTILLER = EssenceDistiller(embedder=lambda x: model.encode(x))
 
-try:
-    from .cloud_gate import CloudGateEssence
-except Exception:
-    from cloud_gate import CloudGateEssence
+from cloud_gate import CloudGateEssence
+
 CLOUD_ALLOW = ALLOWLIST or ["wikipedia.org","docs.python.org","ffmpeg.org","arxiv.org","github.com","x.ai"]
-CLOUD = CloudGateEssence(lambda x: model.encode(x), timeout_s=10.0)
-# ===== Vault =====
-try:
-    from .storage_vault import export_vault, import_vault
-except Exception:
-    from storage_vault import export_vault, import_vault
 
-# ===== Безопасные импорты видео/аудио =====
-import threading as _t
-cv2 = None; sd = None; sf = None
-try:
-    import cv2  # type: ignore
-except Exception:
-    cv2 = None
-try:
-    import sounddevice as sd  # type: ignore
-    import soundfile as sf    # type: ignore
-except Exception:
-    sd = None; sf = None
+def _mk_cloud(allow=None):
+    """Совместим со старыми/новыми сигнатурами CloudGateEssence."""
+    try:
+        return CloudGateEssence(embedder=lambda x: model.encode(x),
+                                allow_domains=(allow or CLOUD_ALLOW),
+                                timeout_s=10.0)
+    except TypeError:
+        try:
+            return CloudGateEssence(lambda x: model.encode(x), (allow or CLOUD_ALLOW), 10.0)
+        except TypeError:
+            return CloudGateEssence(lambda x: model.encode(x))
 
-# ===== KB =====
+CLOUD = _mk_cloud()
+
+# ===== Vault / Video =====
+from storage_vault import export_vault, import_vault
+from video_tools import make_slideshow_from_images, concat_videos
+
+# ===== Simple KB =====
 KB = [
     "Open settings and configure preferences",
     "Create a new note or document",
@@ -114,14 +87,9 @@ FACT_TRIGGERS = ["сегодня","вчера","цена","курс","верси
 
 # ---------- Health / Metrics ----------
 @app.get("/health")
-async def health_open():
-    # открытый health (для CI), не содержит секретов
-    return {"status":"OK","version":"3.4-prod","gen": use_generation()}
-
-@app.get("/health/secure")
-async def health_secure(dep: bool = Depends(require_key)):
+async def health(dep: bool = Depends(require_key)):
     return {
-        "status":"OK","version":"3.4-prod","model": EMBED_MODEL,
+        "status":"OK","version":"3.4-prod","model":"paraphrase-multilingual-MiniLM-L12-v2",
         "mem": MEMORY.stats(), "allowlist": CLOUD_ALLOW, "uptime_sec": int(time.time()-ps_start),
         "gen": use_generation()
     }
@@ -132,7 +100,7 @@ async def metrics(dep: bool = Depends(require_key)):
     return {"items": s["items"], "recent": s["recent"], "gen_mode": use_generation(),
             "allowlist": CLOUD_ALLOW, "autosave_sec": AUTOSAVE_SEC}
 
-# ---------- Setup: Portfolio ----------
+# ---------- Setup ----------
 @app.post("/setup/portfolio")
 async def setup_portfolio(
     profession: str = Form(...),
@@ -190,7 +158,7 @@ async def ingest(file: UploadFile = File(...), tag: str = Form(default="generic"
         MEMORY.learn(f"[{tag}] {file.filename}: {ch[:120]}", model.encode(ch), min(0.99,0.5+len(ch)/5000.0), tags=["file", tag])
         ing += 1
         if i > 1500*20: break
-    return {"status": "OK", "kind": kind, "filename": file.filename, "ng": ing, "approx_chars": len(raw)}
+    return {"status": "OK", "kind": kind, "filename": file.filename, "ingested_chunks": ing, "approx_chars": len(raw)}
 
 @app.post("/ingest/batch")
 async def ingest_batch(files: List[UploadFile] = File(...), tag: str = Form(default="generic"), dep: bool = Depends(require_key)):
@@ -237,9 +205,11 @@ class ChatRequest(BaseModel):
     humor: Optional[bool] = True
     spice: Optional[str] = None  # None|friendly|spicy
 
+FACT_TRIGGERS_SET = set(FACT_TRIGGERS)
+
 def _needs_fresh(q: str) -> bool:
     ql = q.lower()
-    return any(t in ql for t in FACT_TRIGGERS)
+    return any(t in ql for t in FACT_TRIGGERS_SET)
 
 def _clarify(q: str, kb_hit: str) -> str:
     return f"Уточни, пожалуйста: где/когда/какой именно? (Понял как: «{kb_hit}»)"
@@ -262,6 +232,7 @@ async def chat(req: ChatRequest, dep: bool = Depends(require_key)):
 
         kb = _kb_best(qv)
         mem_hits = MEMORY.search(qv, k=5)
+
         rmax = max(kb["score"], float(mem_hits[0]["score"]) if mem_hits else 0.0)
 
         if rmax < TAU_ASK:
@@ -310,7 +281,7 @@ class CloudReq(BaseModel):
 
 @app.post("/cloud/accelerate")
 async def cloud_accelerate(req: CloudReq, dep: bool = Depends(require_key)):
-    cg = CloudGateEssence(lambda x: model.encode(x))
+    cg = _mk_cloud(req.allow or CLOUD_ALLOW)
     res = cg.gate_essence(req.text, k_search=max(3,req.k_docs*2), k_docs=req.k_docs, top_k_sent=req.top_k_sent)
     ing = 0
     for d in res["distilled"]:
@@ -362,12 +333,11 @@ class ConcatReq(BaseModel):
     videos: List[str]
     out_path: Optional[str] = None
 
+import cv2, sounddevice as sd, soundfile as sf, threading as _t
+
 @app.post("/video/make/slideshow")
 async def video_make_slideshow(req: SlideShowReq, dep: bool = Depends(require_key)):
-    if cv2 is None:
-        return {"status":"ERROR","error":"OpenCV backend unavailable in this environment"}
     try:
-        from video_tools import make_slideshow_from_images
         out = req.out_path or f"./outputs/VID_{datetime.datetime.now():%Y%m%d_%H%M%S}.mp4"
         path = make_slideshow_from_images(images=req.images, out_path=out,
                                           duration_per_image=req.duration_per_image,
@@ -378,10 +348,7 @@ async def video_make_slideshow(req: SlideShowReq, dep: bool = Depends(require_ke
 
 @app.post("/video/make/concat")
 async def video_make_concat(req: ConcatReq, dep: bool = Depends(require_key)):
-    if cv2 is None:
-        return {"status":"ERROR","error":"OpenCV backend unavailable in this environment"}
     try:
-        from video_tools import concat_videos
         out = req.out_path or f"./outputs/VID_{datetime.datetime.now():%Y%m%d_%H%M%S}.mp4"
         path = concat_videos(req.videos, out)
         return {"status":"OK","path":str(path)}
@@ -394,7 +361,6 @@ _REC_STATE = {
 }
 
 def _record_camera_worker(device_index: int, out_path: str, fps: int, size: tuple):
-    if cv2 is None: return
     cap = cv2.VideoCapture(device_index)
     if size:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, size[0]); cap.set(cv2.CAP_PROP_FRAME_HEIGHT, size[1])
@@ -414,8 +380,6 @@ def _record_camera_worker(device_index: int, out_path: str, fps: int, size: tupl
 @app.post("/video/record/camera/start")
 async def camera_start(device_index: int = 0, fps: int = 30, width: int = 1280, height: int = 720,
                        out_path: str = Form(default=""), dep: bool = Depends(require_key)):
-    if cv2 is None:
-        return {"status":"ERROR","error":"OpenCV backend unavailable in this environment"}
     cap = cv2.VideoCapture(device_index)
     ok = bool(cap and cap.isOpened())
     if cap: cap.release()
@@ -440,7 +404,6 @@ async def camera_stop(dep: bool = Depends(require_key)):
     return {"status":"OK","path":path}
 
 def _record_mic_worker(out_path: str, rate: int, channels: int):
-    if sd is None or sf is None: return
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with sf.SoundFile(out_path, mode='w', samplerate=rate, channels=channels, subtype='PCM_16') as file:
         def callback(indata, frames, time, status):
@@ -453,8 +416,6 @@ def _record_mic_worker(out_path: str, rate: int, channels: int):
 
 @app.post("/video/record/mic/start")
 async def mic_start(rate: int = 48000, channels: int = 1, out_path: str = Form(default=""), dep: bool = Depends(require_key)):
-    if sd is None or sf is None:
-        return {"status":"ERROR","error":"Audio backend unavailable in this environment"}
     if _REC_STATE["mic"]["thread"] and _REC_STATE["mic"]["thread"].is_alive():
         return {"status":"ERROR","error":"Mic is already recording"}
     path = out_path or f"./outputs/MIC_{datetime.datetime.now():%Y%m%d_%H%M%S}.wav"
@@ -531,4 +492,6 @@ async def bootstrap():
     print("🚀 Resonance Core ready. http://127.0.0.1:8000/docs  |  /ui/chat")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    print("🚀 Starting Resonance Core on http://0.0.0.0:8000")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", workers=2)
+
