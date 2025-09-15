@@ -1,13 +1,14 @@
-name: CI
+name: build-and-smoke
 
 on:
   push:
+    branches: [ main ]
   pull_request:
 
 jobs:
   build-and-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,46 +20,45 @@ jobs:
         run: |
           docker build -t hacs-core:test ./core
 
-      - name: Run container
-        env:
-          API_KEY: changeme
+      - name: Prepare CI .env (no secrets)
         run: |
-          docker run -d --rm --name hacs-ci \
-            -e API_KEY="${API_KEY}" \
-            -p 8000:8000 \
+          cat > core/.env << 'EOF'
+          API_KEY=ci-key
+          ALLOWLIST=wikipedia.org,docs.python.org,ffmpeg.org,arxiv.org,github.com,x.ai
+          USE_GENERATION=none
+          GROK_API_KEY=
+          GROK_MODEL=grok-4-fast
+          OLLAMA_MODEL=llama3.1:8b
+          AUTOSAVE_SEC=5
+          MEMORY_PATH=./state/memory.json
+          HUMOR_MODE=friendly
+          REGION=ru-RU
+          HUMOR_USER_NAME=ci
+          EOF
+
+      - name: Run container
+        run: |
+          # порт наружу CI-вм не нужен, тестируем изнутри раннера
+          docker run -d --rm \
+            --name hacs-ci \
+            -p 127.0.0.1:8000:8000 \
+            --env-file core/.env \
             hacs-core:test
-          # показать логи старта фоном (если упадёт — увидим почему)
-          (sleep 1; docker logs -f hacs-ci &) >/dev/null 2>&1 || true
 
       - name: Smoke (sanity light)
         env:
           API: http://127.0.0.1:8000
-          API_KEY: changeme
+          API_KEY: ci-key
         run: |
-          chmod +x scripts/sanity.sh
-          ./scripts/sanity.sh
-
-      - name: Stop container
-        if: always()
-        run: docker ps -q --filter "name=hacs-ci" | xargs -r docker stop
+          bash ./scripts/sanity_ci.sh
 
       - name: Show logs on failure
         if: failure()
-        run: docker logs hacs-ci || true
-
-  push-image:
-    needs: build-and-smoke
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.GHCR_TOKEN != '' }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN }}
-      - name: Build & Push
         run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/hacs-core:${{ github.sha }}
-          docker build -t "$IMAGE" ./core
-          docker push "$IMAGE"
+          docker ps -a
+          echo "---- container logs ----"
+          docker logs hacs-ci || true
+
+      - name: Stop container
+        if: always()
+        run: docker stop hacs-ci || true
