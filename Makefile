@@ -1,30 +1,10 @@
-.PHONY: help setup run build-agent clean docker-up docker-down test
+.PHONY: up-blue up-green logs-blue logs-green sanity-blue sanity-green clean stopup-blue:
+    docker compose up -d --build hacs-core-blueup-green:
+    docker compose up -d --build hacs-core-greenlogs-blue:
+    docker logs -f hacs-core-bluelogs-green:
+    docker logs -f hacs-core-greensanity-blue:
+    API=http://127.0.0.1:8000 API_KEY=${API_KEY} ./scripts/sanity.shsanity-green:
+    API=http://127.0.0.1:8001 API_KEY=${API_KEY} ./scripts/sanity.shclean:
+    docker compose down -v --remove-orphans  # Grok: remove volumes/orphansstop:
+    docker compose stop
 
-help:
-	@echo "Targets:"
-	@echo "  setup        - create venv & install core deps"
-	@echo "  run          - run local core (uvicorn)"
-	@echo "  build-agent  - build Go agent binary"
-	@echo "  docker-up    - docker compose up -d"
-	@echo "  docker-down  - docker compose down"
-	@echo "  test         - quick health tests"
-
-setup:
-	cd core && python -m venv venv && . venv/bin/activate && pip install -r requirements.txt
-
-run:
-	cd core && . venv/bin/activate && python app.py
-
-build-agent:
-	cd agent && go mod tidy && go build -o hacs-agent main.go
-
-docker-up:
-	docker compose up -d --build
-
-docker-down:
-	docker compose down
-
-test:
-	curl -fsS http://127.0.0.1:8000/health | jq .
-gravity-poc:
-	python3 examples/resonance_gravity_poc.py
