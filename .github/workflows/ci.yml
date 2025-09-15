@@ -33,11 +33,9 @@ jobs:
           USE_GENERATION=none
           GROK_API_KEY=
           GROK_MODEL=grok-4-fast
-
           OLLAMA_MODEL=llama3.1:8b
           AUTOSAVE_SEC=5
           MEMORY_PATH=./state/memory.json
-
           HUMOR_MODE=friendly
           REGION=ru-RU
           HUMOR_USER_NAME=бот
@@ -53,7 +51,6 @@ jobs:
             -v $PWD/data/outputs:/app/outputs \
             -v $PWD/data/vault:/app/vault:ro \
             hacs-core:test
-          # ждём пока поднимется
           for i in {1..30}; do
             if curl -fsS -H "X-API-Key: ci-test-key" http://127.0.0.1:8000/health >/dev/null; then
               echo "service is up"; break; fi; sleep 1
@@ -77,22 +74,39 @@ jobs:
         run: |
           docker rm -f hacs-ci || true
 
-  # OPTIONAL: push to GHCR if token provided
+  # OPTIONAL: push to GHCR — скипнется, если токена нет
   push-image:
     needs: build-and-smoke
     runs-on: ubuntu-latest
-    if: ${{ secrets.GHCR_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+
+      - name: Check GHCR token
+        id: guard
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.GHCR_TOKEN }}" ]; then
+            echo "has=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "has=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip (no token)
+        if: steps.guard.outputs.has == '0'
+        run: echo "No GHCR token; skipping push."
+
       - name: Login to GHCR
+        if: steps.guard.outputs.has == '1'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN }}
+
       - name: Build & push
+        if: steps.guard.outputs.has == '1'
         run: |
           IMAGE=ghcr.io/${{ github.repository }}/hacs-core:${{ github.sha }}
-          docker build -t $IMAGE ./core
-          docker push $IMAGE
+          docker build -t "$IMAGE" ./core
+          docker push "$IMAGE"
