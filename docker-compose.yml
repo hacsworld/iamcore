@@ -1,49 +1,15 @@
 version: "3.9"
 services:
-  hacs-core-blue:
+  core:
     build: ./core
-    container_name: hacs-core-blue
+    container_name: hacs-core
     env_file:
-      - ./core/.env
-    environment:
-      - UVICORN_WORKERS=2
+      - ./core/.env.example
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -H 'X-API-Key: ${API_KEY}' http://127.0.0.1:8000/health || exit 1"]
-      interval: 15s
+      test: ["CMD-SHELL", "curl -fsS -H 'X-API-Key: ${API_KEY:-changeme}' http://127.0.0.1:8000/health || exit 1"]
+      interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 12
     restart: unless-stopped
-    volumes:
-      - ./data/state:/app/state
-      - ./data/outputs:/app/outputs
-      - ./data/vault:/app/vault:ro  # Grok: ro for vault
-    networks:
-      - hacs-net  # Grok: isolated network  hacs-core-green:
-    build: ./core
-    container_name: hacs-core-green
-    env_file:
-      - ./core/.env
-    environment:
-      - UVICORN_WORKERS=2
-    ports:
-      - "8001:8000"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -H 'X-API-Key: ${API_KEY}' http://127.0.0.1:8000/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-    volumes:
-      - ./data/state:/app/state
-      - ./data/outputs:/app/outputs
-      - ./data/vault:/app/vault:ro
-    networks:
-      - hacs-net
-    depends_on:
-      hacs-core-blue:
-        condition: service_healthy  # Grok: green waits blue healthynetworks:
-  hacs-net:  # Grok: custom network
-    driver: bridge
-
