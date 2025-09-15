@@ -78,7 +78,3 @@ class HumorEngine:
             return answer
         return f"{answer}\n\n— {joke}"
 
-    if not joke: return answer
-    # лёгкая подача: сначала ответ по делу, в конце — подкол
-    return f"{answer}\n\n— {joke}"
-
