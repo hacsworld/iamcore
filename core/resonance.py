@@ -1,91 +1,43 @@
-# core/resonance.py
 from __future__ import annotations
 from typing import List, Dict, Any
-import re
-import numpy as np
+import re, numpy as np
 
-# Лёгкие стоп-списки (EN/RU) — помогают штрафовать "шумные" фразы
-STOP_EN = set("""
-a an the and or but if then else for to from of in on at by with without as is are was were be been being do does did
-this that these those it its their your my our you we they i me him her his hers them us not no nor so very just
-""".split())
+STOP = set("и а но или если то тогда иначе для от из в на при с без как это тот те что их ваш мой наш ты мы они не ни yes no the a an and or".split())
 
-STOP_RU = set("""
-и а но или если то тогда иначе для от из в на при с без как это тот те что их ваш мой наш ты мы они
-не ни да нет так очень лишь просто
-""".split())
-
-# Сид для "ядра резонанса" — повышаем приоритизацию предложений с концентрацией сути
-CORE_SEED = (
-    "Law of Core Resonance: Focus on signal, strip noise, compress to essence, then act. "
-    "Ask first when uncertain. Fly to cloud only for essence."
-)
-
-def _norm(v: np.ndarray) -> np.ndarray:
-    n = float(np.linalg.norm(v) + 1e-9)
-    return v / n
-
-def cos(a: np.ndarray, b: np.ndarray) -> float:
-    return float((_norm(a) * _norm(b)).sum())
-
-def noise_score(text: str) -> float:
-    """
-    Эвристика шума: больше стоп-слов, длинные слова без дела и повторяемость — выше шум.
-    Возвращает число, которое лучше бы МЕНЬШЕ.
-    """
-    words = re.findall(r"\w+", (text or "").lower())
-    if not words:
-        return 1.0
-    L = len(words)
-    stop_frac = (sum(1 for w in words if w in STOP_EN or w in STOP_RU) / max(1, L))
-    avg_len = sum(len(w) for w in words) / max(1, L)
-    from collections import Counter
-    cnt = Counter(words)
-    repeated = max(cnt.values()) / max(1, L)
-    # ⚠️ ВАЖНО: тут были слепленные токены; правильная формула ниже
-    return 0.6 * stop_frac + 0.2 * (avg_len / 8.0) + 0.4 * repeated
+def _norm(v: np.ndarray)->np.ndarray:
+    n = float(np.linalg.norm(v) + 1e-9); return v / n
 
 def split_sentences(text: str) -> List[str]:
-    parts = re.split(r"(?<=[\.\!\?])\s+", (text or "").strip())
+    parts = re.split(r"(?<=[\.\!\?\n])\s+", (text or "").strip())
     return [p.strip() for p in parts if p.strip()]
 
 class EssenceDistiller:
-    """
-    Ранжируем предложения по 3 факторам:
-      • близость к запросу,
-      • близость к CORE_SEED (сжатая суть),
-      • штраф за шум.
-    """
-    def __init__(self, embedder, alpha: float = 0.65, beta: float = 0.45, gamma: float = 0.35):
+    def __init__(self, embedder, alpha=0.65, beta=0.45, gamma=0.35):
         self.embed = embedder
         self.alpha, self.beta, self.gamma = alpha, beta, gamma
-        self.core_vec = self.embed(CORE_SEED)
+        self.core_vec = self.embed("Law of Core Resonance. Focus on signal, strip noise, compress to essence, then act.")
 
-    def score_sentence(self, q_vec: np.ndarray, s: str) -> float:
+    def _cos(self, a,b): return float((_norm(a)*_norm(b)).sum())
+
+    def _noise(self, s:str)->float:
+        words = re.findall(r"\w+", s.lower())
+        if not words: return 1.0
+        stop_frac = sum(1 for w in words if w in STOP)/max(1,len(words))
+        return 0.7*stop_frac + 0.3*min(1.0, len(s)/3000.0)
+
+    def score_sentence(self, qv: np.ndarray, s: str) -> float:
         sv = self.embed(s)
-        # чем выше cos — тем лучше; шум вычитаем
-        return self.alpha * cos(q_vec, sv) + self.beta * cos(self.core_vec, sv) - self.gamma * noise_score(s)
+        return self.alpha*self._cos(qv, sv) + self.beta*self._cos(self.core_vec, sv) - self.gamma*self._noise(s)
 
-    def distill(self, query: str, text: str, top_k: int = 6, max_chars: int = 800) -> Dict[str, Any]:
+    def distill(self, query: str, text: str, top_k=4, max_chars=400) -> Dict[str, Any]:
         sents = split_sentences(text)
-        if not sents:
-            return {"essence": "", "snippets": [], "scores": []}
+        if not sents: return {"essence":"","snippets":[]}
         qv = self.embed(query)
-        scored = [(s, self.score_sentence(qv, s)) for s in sents]
-        scored.sort(key=lambda x: x[1], reverse=True)
-
-        out: List[str] = []
-        scs: List[float] = []
-        total = 0
-        for s, sc in scored:
-            if s in out:
-                continue
-            if total + len(s) > max_chars:
-                continue
-            out.append(s)
-            scs.append(sc)
-            total += len(s)
-            if len(out) >= top_k:
-                break
-
-        return {"essence": " ".join(out).strip(), "snippets": out, "scores": scs}
+        scored = sorted(sents, key=lambda s: self.score_sentence(qv,s), reverse=True)
+        out, total = [], 0
+        for s in scored:
+            if s in out: continue
+            if total + len(s) > max_chars: continue
+            out.append(s); total += len(s)
+            if len(out) >= top_k: break
+        return {"essence": " ".join(out).strip(), "snippets": out}
