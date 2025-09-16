@@ -1,6 +1,10 @@
-import requests
+from core.app import app
+from fastapi.testclient import TestClient
 
 def test_ping():
-    res = requests.get("http://127.0.0.1:8000/ping", headers={"X-API-Key": "changeme"})
+    client = TestClient(app)
+    res = client.get("/ping", headers={"X-API-Key": "changeme"})
     assert res.status_code == 200
-    assert res.json().get("ok") is True
+    data = res.json()
+    assert data.get("ok") is True
+    assert isinstance(data.get("ts"), int)
