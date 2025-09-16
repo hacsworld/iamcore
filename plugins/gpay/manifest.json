@@ -1,0 +1,6 @@
+{
+  "id": "g.pay",
+  "title": "G-Pay",
+  "commands": ["/wallet", "/deposit", "/withdraw"],
+  "version": "0.1.0"
+}
