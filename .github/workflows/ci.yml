@@ -1,4 +1,11 @@
-name: HACS Core CI
+# Produce an updated CI workflow that sets PYTHONPATH so tests can import `core`.
+import os, zipfile, textwrap, json, pathlib
+
+base = "/mnt/data/ci_fix_module"
+wf_dir = os.path.join(base, ".github", "workflows")
+os.makedirs(wf_dir, exist_ok=True)
+
+ci_yml = """name: HACS Core CI
 
 on:
   push:
@@ -46,7 +53,7 @@ jobs:
     - name: Run unit tests (FastAPI TestClient)
       run: |
         source .venv/bin/activate
-        pytest -v
+        PYTHONPATH=$PWD pytest -v tests
 
     - name: Run core in background for sanity checks
       run: |
@@ -61,3 +68,14 @@ jobs:
         bash scripts/sanity.sh
         echo "---- uvicorn.log tail ----"
         tail -n 200 /tmp/uvicorn.log || true
+"""
+open(os.path.join(wf_dir, "ci.yml"), "w").write(ci_yml)
+
+zip_path = "/mnt/data/ci_fix_module.zip"
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+    for root, _, files in os.walk(base):
+        for f in files:
+            p = os.path.join(root, f)
+            z.write(p, arcname=os.path.relpath(p, base))
+
+zip_path
