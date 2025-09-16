@@ -1,7 +1,0 @@
-# env & local
-core/.env
-*.pyc
-__pycache__/
-*.log
-.tmp/
-
