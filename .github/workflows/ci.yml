@@ -6,30 +6,58 @@ on:
   pull_request:
     branches: [ "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  API_KEY: changeme
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
-        python-version: "3.10"
+        python-version: "3.12"
+
+    - name: Cache pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('core/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
 
     - name: Install dependencies
       run: |
         python -m venv .venv
         source .venv/bin/activate
+        pip install --upgrade pip
         pip install -r core/requirements.txt
         pip install pytest requests
 
-    - name: Run sanity test
-      run: bash scripts/sanity.sh || true
-
-    - name: Run pytest
+    - name: Run unit tests (FastAPI TestClient)
       run: |
         source .venv/bin/activate
         pytest -v
+
+    - name: Run core in background for sanity checks
+      run: |
+        source .venv/bin/activate
+        nohup uvicorn core.app:app --host 127.0.0.1 --port 8000 >/tmp/uvicorn.log 2>&1 &
+        sleep 5
+
+    - name: Sanity script (curl endpoints)
+      env:
+        API_KEY: ${{ env.API_KEY }}
+      run: |
+        bash scripts/sanity.sh
+        echo "---- uvicorn.log tail ----"
+        tail -n 200 /tmp/uvicorn.log || true
