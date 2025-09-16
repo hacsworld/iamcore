@@ -1,0 +1,10 @@
+# Пример будущих правил. Пока не используется напрямую.
+rules:
+  - pattern: "/wallet"
+    ui_action:
+      open: "g.pay"
+      tab: "crypto"
+  - pattern: "/market"
+    ui_action:
+      open: "g.market"
+      tab: "catalog"
