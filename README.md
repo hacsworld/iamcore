@@ -349,6 +349,7 @@ out.messages.forEach(msg => {
 - [ ] Память автосинх в облако
 
 ---
-
+🌐 [hacs.world](https://hacs.world)  
+🐦 [@RuslanVolkov25](https://x.com/RuslanVolkov25)
 Voice of the Future 🌍  
 HACS Core — твой личный AGI-движок.
